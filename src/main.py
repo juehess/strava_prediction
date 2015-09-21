@@ -3,11 +3,16 @@ from flask import Flask, request, redirect, session, url_for
 from flask.json import jsonify
 import os
 import stravalib
+import numpy as np
 
+#for plotting
+from matplotlib.backends.backend_agg import FigureCanvasAgg as FigureCanvas
+from matplotlib.figure import Figure
+import random
+import StringIO
+from flask import Flask, make_response
 
 class StravaExporter:
-
-
 
     def __init__(self):
         self.client_=stravalib.Client()
@@ -27,6 +32,7 @@ class StravaExporter:
         self.distance=[]
         self.velocity=[]
         self.grade=[]
+        self.data_retrieved=False
 
         self.athlete_ = self.client_.get_athlete()
         print("For {id}, I now have an access token {token}".format(id=self.athlete_.id, token=self.access_token_))
@@ -35,49 +41,61 @@ class StravaExporter:
         types = ['time', 'distance', 'velocity_smooth', 'grade_smooth', 'cadence', 'heartrate' ]
         types = ['time', 'distance', 'velocity_smooth', 'grade_smooth']
         activities=self.client_.get_activities(limit=2)
+        #activities=self.client_.get_activities()
 
+        n_act=len(list(activities))
+        print "Found " + str(n_act) + " activities."
+        i=0
         for act in list(activities):
+            i=i+1
+            print "Retrieving activity " + str(i) + " of "  + str(n_act)
             streams = self.client_.get_activity_streams(act.id, types=types, resolution='low')
-            print act.id
             # #  Result is a dictionary object.  The dict's key are the stream type.
             if 'time' in streams.keys():
                 self.time.extend(streams['time'].data)
             if 'distance' in streams.keys():
-                self.distance.append(streams['distance'].data)
+                self.distance.extend(streams['distance'].data)
             if 'velocity_smooth' in streams.keys():
-                self.velocity.append(streams['velocity_smooth'].data)
+                self.velocity.extend(streams['velocity_smooth'].data)
             if 'grade_smooth' in streams.keys():
-                self.grade.append(streams['grade_smooth'].data)
-            print self.time
-            print streams['time'].data
-            # print len(self.distance)
-            # print len(self.velocity)
-            # print len(self.grade)
+                self.grade.extend(streams['grade_smooth'].data)
+
+        print "Saving data to numpy array"
+        #check if data has the same lenght
+        if (len(self.time) ==  len(self.distance) == len(self.velocity) == len(self.grade)):
+            self.data=np.column_stack((self.time,self.distance,self.velocity,self.grade))
+            print "The final data size is " + str(self.data.shape)
+            print "Saving to data to file."
+            np.savetxt("strava.txt", self.data, delimiter=" ")
+            self.data_retrieved=True
+            print "Done"
+        else:
+            print "data length differs for different streams"
+            print "length time " + str(len(self.time))
+            print "length distance " + str(len(self.distance))
+            print "length velocity " + str(len(self.velocity))
+            print "length grade " + str(len(self.grade))
+            self.data_retrieved=False
         return "done"
+
+    def plotData(self):
+        fig = Figure()
+        axis = fig.add_subplot(1, 1, 1)
+        axis.plot(self.grade, self.velocity,'bo')
+        axis.set_ylabel('Velocity')
+        axis.set_xlabel('Grade')
+        axis.set_xlim([-20,20])
+        canvas = FigureCanvas(fig)
+        output = StringIO.StringIO()
+        canvas.print_png(output)
+        return output.getvalue()
 
 exporter=StravaExporter()
 app = Flask(__name__)
 
 @app.route("/")
 def authentification():
-    """Step 1: User Authorization.
-
-    Redirect the user/resource owner to the OAuth provider (i.e. Github)
-    using an URL with a few key OAuth parameters.
-    """
-    # strava = OAuth2Session(client_id_, redirect_uri=redirect_uri_)
-    # authorization_url, state = strava.authorization_url(authorization_base_url)
-    # print 'Please go here and authorize,'
-    # print authorization_url
-    # print authorization_url_
-    # print state
-    #
-    # # State is used to prevent CSRF, keep this for later.
-    # session['oauth_state'] = state
     return redirect(exporter.authorization_url_)
-
-
-# Step 2: User authorization, this happens on the provider.
 
 @app.route("/authorization", methods=["GET"])
 def callback():
@@ -94,7 +112,13 @@ def profile():
     """Fetching a protected resource using an OAuth 2 token.
     """
     exporter.retrieveData()
-    return "done"
+    return redirect(url_for('.plot'))
+
+@app.route('/plot')
+def plot():
+    response = make_response(exporter.plotData())
+    response.mimetype = 'image/png'
+    return response
 
 if __name__ == "__main__":
     # This allows us to use a plain HTTP callback
